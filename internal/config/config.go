@@ -26,7 +26,7 @@ type UpstreamConfig struct {
 
 type LocalConfig struct {
 	URL     string        `envconfig:"OLLAMA_URL" default:"http://localhost:11434"`
-	Model   string        `envconfig:"OLLAMA_MODEL" default:"gemma3:4b"`
+	Model   string        `envconfig:"OLLAMA_MODEL" default:"gemma3:1b"`
 	Timeout time.Duration `envconfig:"OLLAMA_TIMEOUT" default:"120s"`
 }
 
