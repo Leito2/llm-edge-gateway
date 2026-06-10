@@ -143,3 +143,79 @@ func TestOllamaLocal_Chat_DefaultModel(t *testing.T) {
 		t.Fatalf("Chat: %v", err)
 	}
 }
+
+func TestOllamaLocal_StreamChat_Success(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req ollamaChatRequest
+		body, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(body, &req)
+		if !req.Stream {
+			t.Error("expected stream=true in request")
+		}
+		flusher, _ := w.(http.Flusher)
+		chunks := []ollamaChatResponse{
+			{Model: "gemma3:1b", Message: types.ChatMessage{Role: "assistant", Content: "Hi "}, Done: false},
+			{Model: "gemma3:1b", Message: types.ChatMessage{Role: "assistant", Content: "there"}, Done: false},
+			{Model: "gemma3:1b", Message: types.ChatMessage{Role: "assistant", Content: "."}, Done: false, EvalCount: 1},
+			{Model: "gemma3:1b", Message: types.ChatMessage{Role: "assistant", Content: ""}, Done: true, EvalCount: 3},
+		}
+		for _, c := range chunks {
+			b, _ := json.Marshal(c)
+			_, _ = w.Write(b)
+			_, _ = w.Write([]byte("\n"))
+			if flusher != nil {
+				flusher.Flush()
+			}
+		}
+	}))
+	defer srv.Close()
+
+	o := NewOllamaLocal(srv.URL, "gemma3:1b", 2*time.Second)
+	chunks, errs := o.StreamChat(context.Background(), types.ChatRequest{
+		Messages: []types.ChatMessage{{Role: "user", Content: "x"}},
+	})
+
+	var collected []string
+	for c := range chunks {
+		if c.Done {
+			break
+		}
+		collected = append(collected, c.Content)
+	}
+	select {
+	case e := <-errs:
+		if e != nil {
+			t.Fatalf("unexpected error: %v", e)
+		}
+	default:
+	}
+
+	got := ""
+	for _, c := range collected {
+		got += c
+	}
+	if got != "Hi there." {
+		t.Errorf("streamed content = %q, want 'Hi there.'", got)
+	}
+}
+
+func TestOllamaLocal_StreamChat_HTTPError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte("model not loaded"))
+	}))
+	defer srv.Close()
+
+	o := NewOllamaLocal(srv.URL, "gemma3:1b", 2*time.Second)
+	_, errs := o.StreamChat(context.Background(), types.ChatRequest{
+		Messages: []types.ChatMessage{{Role: "user", Content: "x"}},
+	})
+	select {
+	case e := <-errs:
+		if e == nil {
+			t.Fatal("expected error, got nil")
+		}
+	case <-time.After(1 * time.Second):
+		t.Fatal("expected error channel signal, got none")
+	}
+}

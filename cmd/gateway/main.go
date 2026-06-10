@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
@@ -77,7 +78,9 @@ func main() {
 		Cache:     c,
 		Breaker:   cb,
 		Upstream:  up,
+		UpstreamS: up,
 		Fallback:  fb,
+		FallbackS: fb,
 		Metrics:   m,
 		StartTime: time.Now(),
 	}
@@ -87,6 +90,7 @@ func main() {
 		ReadTimeout:           cfg.Server.ReadTimeout,
 		WriteTimeout:          cfg.Server.WriteTimeout,
 		DisableStartupMessage: false,
+		StreamRequestBody:     true,
 	})
 	app.Use(recover.New())
 	app.Use(logger.New(logger.Config{
@@ -98,7 +102,16 @@ func main() {
 	app.Get("/stats", p.HandleStats)
 
 	v1 := app.Group("/v1", auth.RequireAPIKey(cfg.Auth.APIKey))
-	v1.Post("/chat/completions", p.HandleChat)
+	v1.Post("/chat/completions", func(c *fiber.Ctx) error {
+		var preview struct {
+			Stream bool `json:"stream"`
+		}
+		_ = json.Unmarshal(c.Body(), &preview)
+		if preview.Stream {
+			return p.HandleChatStream(c)
+		}
+		return p.HandleChat(c)
+	})
 
 	addr := fmt.Sprintf(":%d", cfg.Server.Port)
 	go func() {

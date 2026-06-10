@@ -158,3 +158,74 @@ func TestGroqProvider_Chat_InvalidJSON(t *testing.T) {
 		t.Fatal("expected decode error, got nil")
 	}
 }
+
+func TestGroqProvider_StreamChat_Success(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Accept") != "text/event-stream" {
+			t.Errorf("expected Accept: text/event-stream, got %q", r.Header.Get("Accept"))
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher, _ := w.(http.Flusher)
+		chunks := []string{
+			`data: {"choices":[{"delta":{"content":"Go "},"finish_reason":""}]}`,
+			`data: {"choices":[{"delta":{"content":"is "},"finish_reason":""}]}`,
+			`data: {"choices":[{"delta":{"content":"fast"},"finish_reason":"stop"}]}`,
+			`data: [DONE]`,
+		}
+		for _, c := range chunks {
+			_, _ = w.Write([]byte(c + "\n\n"))
+			if flusher != nil {
+				flusher.Flush()
+			}
+		}
+	}))
+	defer srv.Close()
+
+	p := NewGroqProvider(srv.URL, "k", "m", 2*time.Second)
+	chunks, errs := p.StreamChat(context.Background(), newChatReq())
+
+	var collected []string
+	for c := range chunks {
+		if c.Done {
+			break
+		}
+		collected = append(collected, c.Content)
+	}
+	select {
+	case e := <-errs:
+		if e != nil {
+			t.Fatalf("unexpected error: %v", e)
+		}
+	default:
+	}
+
+	got := ""
+	for _, c := range collected {
+		got += c
+	}
+	if got != "Go is fast" {
+		t.Errorf("streamed content = %q, want 'Go is fast'", got)
+	}
+}
+
+func TestGroqProvider_StreamChat_HTTPError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte("invalid key"))
+	}))
+	defer srv.Close()
+
+	p := NewGroqProvider(srv.URL, "k", "m", 2*time.Second)
+	_, errs := p.StreamChat(context.Background(), newChatReq())
+	for range []int{0: 0} {
+		break
+	}
+	select {
+	case e := <-errs:
+		if e == nil {
+			t.Fatal("expected error, got nil")
+		}
+	case <-time.After(1 * time.Second):
+		t.Fatal("expected error channel signal, got none")
+	}
+}

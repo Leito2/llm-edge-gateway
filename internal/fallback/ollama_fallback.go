@@ -1,6 +1,7 @@
 package fallback
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -9,6 +10,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/Leito2/llm-edge-gateway/internal/providers"
 	"github.com/Leito2/llm-edge-gateway/pkg/types"
 )
 
@@ -106,4 +108,77 @@ func (o *OllamaLocal) Chat(ctx context.Context, req types.ChatRequest) (*types.C
 		Provider: "ollama-local",
 	}
 	return chatResp, nil
+}
+
+// StreamChat returns a channel of streaming chunks from Ollama local.
+// Reuses the StreamChunk type from the providers package.
+func (o *OllamaLocal) StreamChat(ctx context.Context, req types.ChatRequest) (<-chan providers.StreamChunk, <-chan error) {
+	chunks := make(chan providers.StreamChunk, 16)
+	errs := make(chan error, 1)
+
+	if req.Model == "" {
+		req.Model = o.model
+	}
+	req.Stream = true
+
+	go func() {
+		defer close(chunks)
+		defer close(errs)
+
+		body, err := json.Marshal(ollamaChatRequest{
+			Model:    req.Model,
+			Messages: req.Messages,
+			Stream:   true,
+			Options: map[string]any{
+				"num_ctx": 2048,
+			},
+		})
+		if err != nil {
+			errs <- fmt.Errorf("marshal request: %w", err)
+			return
+		}
+
+		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost,
+			o.baseURL+"/api/chat", bytes.NewReader(body))
+		if err != nil {
+			errs <- fmt.Errorf("build request: %w", err)
+			return
+		}
+		httpReq.Header.Set("Content-Type", "application/json")
+		httpReq.Header.Set("Accept", "application/x-ndjson")
+
+		resp, err := o.hc.Do(httpReq)
+		if err != nil {
+			errs <- fmt.Errorf("call ollama local: %w", err)
+			return
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			raw, _ := io.ReadAll(resp.Body)
+			errs <- fmt.Errorf("ollama local: status %d: %s", resp.StatusCode, string(raw))
+			return
+		}
+
+		scanner := bufio.NewScanner(resp.Body)
+		scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+		for scanner.Scan() {
+			var evt ollamaChatResponse
+			if err := json.Unmarshal(scanner.Bytes(), &evt); err != nil {
+				continue
+			}
+			if evt.Done {
+				chunks <- providers.StreamChunk{Done: true, FinishReason: "stop"}
+				return
+			}
+			if evt.Message.Content != "" {
+				chunks <- providers.StreamChunk{Content: evt.Message.Content}
+			}
+		}
+		if err := scanner.Err(); err != nil {
+			errs <- fmt.Errorf("ollama stream read: %w", err)
+		}
+	}()
+
+	return chunks, errs
 }
