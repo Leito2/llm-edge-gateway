@@ -1,12 +1,28 @@
 package main
 
 import (
-	"encoding/json"
+	"context"
 	"fmt"
 	"log"
 	"os"
+	"os/signal"
+	"syscall"
+	"time"
 
+	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v2/middleware/logger"
+	"github.com/gofiber/fiber/v2/middleware/recover"
+	"github.com/redis/go-redis/v9"
+
+	"github.com/Leito2/llm-edge-gateway/internal/auth"
+	"github.com/Leito2/llm-edge-gateway/internal/breaker"
+	"github.com/Leito2/llm-edge-gateway/internal/cache"
 	"github.com/Leito2/llm-edge-gateway/internal/config"
+	"github.com/Leito2/llm-edge-gateway/internal/embedder"
+	"github.com/Leito2/llm-edge-gateway/internal/fallback"
+	"github.com/Leito2/llm-edge-gateway/internal/metrics"
+	"github.com/Leito2/llm-edge-gateway/internal/providers"
+	"github.com/Leito2/llm-edge-gateway/internal/proxy"
 )
 
 func main() {
@@ -15,33 +31,89 @@ func main() {
 		log.Fatalf("config load failed: %v", err)
 	}
 
-	hide := func(s string) string {
-		if len(s) <= 8 {
-			return "***"
-		}
-		return s[:4] + "***" + s[len(s)-4:]
+	rdb := redis.NewClient(&redis.Options{
+		Addr:     cfg.Redis.Addr,
+		Password: cfg.Redis.Password,
+		DB:       cfg.Redis.DB,
+	})
+	pingCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	if err := rdb.Ping(pingCtx).Err(); err != nil {
+		cancel()
+		log.Fatalf("redis ping failed: %v", err)
+	}
+	cancel()
+	log.Printf("[main] redis OK at %s", cfg.Redis.Addr)
+
+	emb := embedder.NewOllamaEmbedder(cfg.Embedding.URL, cfg.Embedding.Model, cfg.Embedding.Dims)
+	embCtx, embCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	if _, err := emb.Embed(embCtx, "warmup"); err != nil {
+		embCancel()
+		log.Fatalf("embedder warmup failed: %v", err)
+	}
+	embCancel()
+	log.Printf("[main] embedder OK (%s, %d dims)", cfg.Embedding.Model, cfg.Embedding.Dims)
+
+	c := cache.New(rdb, cfg.Cache.SimilarityThreshold, cfg.Cache.TTL)
+	log.Printf("[main] cache OK (threshold=%.2f, ttl=%s)", cfg.Cache.SimilarityThreshold, cfg.Cache.TTL)
+
+	cb := breaker.New(breaker.Settings{
+		Name:             "groq",
+		FailureThreshold: uint32(cfg.Breaker.FailureThreshold),
+		OpenTimeout:      cfg.Breaker.OpenTimeout,
+		Interval:         cfg.Breaker.OpenTimeout * 2,
+		HalfOpenMax:      cfg.Breaker.HalfOpenMaxRequests,
+		OnStateChange: func(name, from, to string) {
+			log.Printf("[breaker] state change: %s %s -> %s", name, from, to)
+		},
+	})
+	log.Printf("[main] circuit breaker OK (threshold=%d, timeout=%s)", cfg.Breaker.FailureThreshold, cfg.Breaker.OpenTimeout)
+
+	up := providers.NewGroqProvider(cfg.Upstream.BaseURL, cfg.Upstream.APIKey, cfg.Upstream.Model, cfg.Upstream.Timeout)
+	fb := fallback.NewOllamaLocal(cfg.Local.URL, cfg.Local.Model, cfg.Local.Timeout)
+	m := metrics.New()
+
+	p := &proxy.Proxy{
+		Embedder:  emb,
+		Cache:     c,
+		Breaker:   cb,
+		Upstream:  up,
+		Fallback:  fb,
+		Metrics:   m,
+		StartTime: time.Now(),
 	}
 
-	snapshot := struct {
-		Server    string
-		Auth      string
-		Upstream  string
-		Local     string
-		Embedding string
-		Redis     string
-		Cache     string
-		Breaker   string
-	}{
-		Server:    fmt.Sprintf("port=%d read=%s write=%s", cfg.Server.Port, cfg.Server.ReadTimeout, cfg.Server.WriteTimeout),
-		Auth:      fmt.Sprintf("api_key=%s", hide(cfg.Auth.APIKey)),
-		Upstream:  fmt.Sprintf("base=%s model=%s key=%s timeout=%s", cfg.Upstream.BaseURL, cfg.Upstream.Model, hide(cfg.Upstream.APIKey), cfg.Upstream.Timeout),
-		Local:     fmt.Sprintf("url=%s model=%s timeout=%s", cfg.Local.URL, cfg.Local.Model, cfg.Local.Timeout),
-		Embedding: fmt.Sprintf("url=%s model=%s dims=%d", cfg.Embedding.URL, cfg.Embedding.Model, cfg.Embedding.Dims),
-		Redis:     fmt.Sprintf("addr=%s db=%d", cfg.Redis.Addr, cfg.Redis.DB),
-		Cache:     fmt.Sprintf("threshold=%.2f ttl=%s", cfg.Cache.SimilarityThreshold, cfg.Cache.TTL),
-		Breaker:   fmt.Sprintf("threshold=%d open_timeout=%s request_timeout=%s", cfg.Breaker.FailureThreshold, cfg.Breaker.OpenTimeout, cfg.Breaker.RequestTimeout),
+	app := fiber.New(fiber.Config{
+		AppName:               "llm-edge-gateway",
+		ReadTimeout:           cfg.Server.ReadTimeout,
+		WriteTimeout:          cfg.Server.WriteTimeout,
+		DisableStartupMessage: false,
+	})
+	app.Use(recover.New())
+	app.Use(logger.New(logger.Config{
+		Format:     "${time} ${status} ${method} ${path} (${latency})\n",
+		TimeFormat: "15:04:05",
+	}))
+
+	app.Get("/health", p.HandleHealth)
+	app.Get("/stats", p.HandleStats)
+
+	v1 := app.Group("/v1", auth.RequireAPIKey(cfg.Auth.APIKey))
+	v1.Post("/chat/completions", p.HandleChat)
+
+	addr := fmt.Sprintf(":%d", cfg.Server.Port)
+	go func() {
+		log.Printf("[main] starting gateway on %s", addr)
+		if err := app.Listen(addr); err != nil {
+			log.Fatalf("listen failed: %v", err)
+		}
+	}()
+
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
+	<-sig
+	log.Printf("[main] shutdown signal received")
+	if err := app.ShutdownWithTimeout(5 * time.Second); err != nil {
+		log.Printf("[main] shutdown error: %v", err)
 	}
-	out, _ := json.MarshalIndent(snapshot, "", "  ")
-	fmt.Println(string(out))
-	os.Exit(0)
+	_ = rdb.Close()
 }
