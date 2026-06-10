@@ -1,0 +1,40 @@
+# Environment
+.env
+.env.local
+
+# Go
+*.exe
+*.dll
+*.so
+*.dylib
+bin/
+dist/
+*.test
+*.out
+coverage.txt
+coverage.html
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker
+*.log
+docker-compose.override.yml
+
+# Ollama models (downloaded by scripts/pull-models.sh)
+# (Model files live in ~/.ollama, not in this repo, so nothing to ignore)
+
+# Build artifacts
+/gateway
+/gateway-*
+
+# Test outputs
+/tmp/

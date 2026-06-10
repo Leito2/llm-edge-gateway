@@ -1,0 +1,29 @@
+services:
+  redis:
+    image: redis/redis-stack-server:7.4.0-v3
+    container_name: gateway-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+      - ./scripts/init-redis.sh:/docker-entrypoint-initdb.d/init.sh:ro
+    command: >
+      redis-server
+      --loadmodule /opt/redis-stack/lib/redisearch.so
+      --maxmemory 2gb
+      --maxmemory-policy allkeys-lru
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+    healthcheck:
+      test: ["CMD", "redis-cli", "FT._LIST"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+volumes:
+  redis-data:
+    name: gateway-redis-data
