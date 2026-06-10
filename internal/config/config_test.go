@@ -40,8 +40,8 @@ func TestLoad_Defaults(t *testing.T) {
 	if cfg.Embedding.Dims != 768 {
 		t.Errorf("default Embedding.Dims = %d, want 768", cfg.Embedding.Dims)
 	}
-	if cfg.Cache.SimilarityThreshold != 0.96 {
-		t.Errorf("default SimilarityThreshold = %f, want 0.96", cfg.Cache.SimilarityThreshold)
+	if cfg.Cache.SimilarityThreshold != 0.85 {
+		t.Errorf("default SimilarityThreshold = %f, want 0.85", cfg.Cache.SimilarityThreshold)
 	}
 	if cfg.Breaker.FailureThreshold != 3 {
 		t.Errorf("default FailureThreshold = %d, want 3", cfg.Breaker.FailureThreshold)
