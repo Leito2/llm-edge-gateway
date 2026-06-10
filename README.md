@@ -221,6 +221,29 @@ Response is identical to OpenAI's format, with one extra header:
 - Ollama installed (`curl -fsSL https://ollama.com/install.sh | sh`)
 - (Optional) NVIDIA GPU + drivers for embedding acceleration
 
+### Talking to the gateway (clients)
+
+Once the gateway is running, any OpenAI-compatible client can talk to it by pointing at `http://localhost:8080/v1`. See [`examples/`](./examples/) for ready-to-use scripts in:
+
+- **curl** (no deps)
+- **Python** (stdlib only or `openai` SDK)
+- **Node.js** (stdlib only or `openai` SDK)
+- **Go** (using the official `openai-go` SDK)
+
+```bash
+# 1. Simplest possible: curl non-streaming
+curl -X POST http://localhost:8080/v1/chat/completions \
+  -H "Authorization: Bearer $GATEWAY_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"gemma3:1b","messages":[{"role":"user","content":"Hi"}]}'
+
+# 2. Streaming with curl -N (chunks arrive over time)
+curl -N -X POST http://localhost:8080/v1/chat/completions \
+  -H "Authorization: Bearer $GATEWAY_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"gemma3:1b","stream":true,"messages":[{"role":"user","content":"Hi"}]}'
+```
+
 ### Streaming Support
 
 The gateway supports OpenAI-compatible Server-Sent Events streaming. Just add `"stream": true` to the request body:
