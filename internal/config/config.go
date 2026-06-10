@@ -43,7 +43,7 @@ type RedisConfig struct {
 }
 
 type CacheConfig struct {
-	SimilarityThreshold float64       `envconfig:"CACHE_SIMILARITY_THRESHOLD" default:"0.96"`
+	SimilarityThreshold float64       `envconfig:"CACHE_SIMILARITY_THRESHOLD" default:"0.85"`
 	TTL                 time.Duration `envconfig:"CACHE_TTL_HOURS" default:"168h"`
 }
 
