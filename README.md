@@ -221,6 +221,29 @@ Response is identical to OpenAI's format, with one extra header:
 - Ollama installed (`curl -fsSL https://ollama.com/install.sh | sh`)
 - (Optional) NVIDIA GPU + drivers for embedding acceleration
 
+### Streaming Support
+
+The gateway supports OpenAI-compatible Server-Sent Events streaming. Just add `"stream": true` to the request body:
+
+```bash
+curl -N -X POST http://localhost:8080/v1/chat/completions \
+  -H "Authorization: Bearer $GATEWAY_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "llama-3.3-70b-versatile",
+    "stream": true,
+    "messages": [{"role": "user", "content": "Explain the circuit breaker pattern in 3 sentences."}]
+  }'
+```
+
+**Streaming behavior:**
+- **Cache HIT**: cached response is tokenized and emitted in 20ms chunks (simulated streaming)
+- **Cache MISS + upstream OK**: real streaming from Groq
+- **Cache MISS + upstream fail/open**: real streaming from Ollama local fallback
+- All chunks use OpenAI format: `data: {"choices":[{"delta":{"content":"..."}}]}\n\n`
+- Stream ends with `data: [DONE]\n\n`
+- Cache writeback happens asynchronously after the stream completes
+
 ### 1. Clone and configure
 
 ```bash
@@ -332,7 +355,7 @@ llm-edge-gateway/
 | 8 | Orquestador Fiber + auth | ✅ | `internal/proxy/`, `cmd/gateway/main.go` |
 | 9 | Tests + benchmark | ✅ | 50/50 tests pass, real perf numbers in this README |
 | 10 | Demo circuit breaker | ⏳ | See AGENTS.md |
-| 11 | Streaming SSE (post-MVP) | 🔮 | `text/event-stream` passthrough |
+| 11 | Streaming SSE | ✅ | `text/event-stream` passthrough (Groq + Ollama local) |
 
 ---
 
