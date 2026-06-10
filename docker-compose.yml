@@ -13,6 +13,8 @@ services:
       --loadmodule /opt/redis-stack/lib/redisearch.so
       --maxmemory 2gb
       --maxmemory-policy allkeys-lru
+      --protected-mode no
+      --bind 0.0.0.0
     deploy:
       resources:
         limits:
