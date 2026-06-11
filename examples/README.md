@@ -13,257 +13,165 @@
 
 ## 🎯 Project Overview
 
-**LLM Edge Gateway** is a low-latency, high-concurrency API Gateway engineered to optimize Large Language Model (LLM) orchestration. It sits between your application and any LLM provider (Groq, OpenAI, etc.) and adds three production-critical capabilities that bare API calls don't have:
+**LLM Edge Gateway** is a low-latency, high-concurrency API Gateway engineered to optimize Large Language Model orchestration.
 
-1. **💰 Semantic caching** — embeds every query locally and serves repeated or similar queries in **<100 ms** at zero API cost, cutting operational spending by **30–40 %**.
-2. **🛡️ Circuit-breaker failover** — when the upstream provider is slow, errors, or rate-limits, traffic is automatically rerouted to a **local Gemma 3 1B fallback** running via Ollama, guaranteeing **99.9 % uptime**.
-3. **⚡ High throughput** — built on Go + Fiber/fasthttp with Goroutine-based concurrency, the gateway can process **10 K+ req/s** on a single core with negligible memory footprint.
-
-### Why this exists
-
-Commercial LLM APIs have two production-killing properties:
-- **Unpredictable latency** — p99 can spike from 800 ms to 8 s+ with no warning.
-- **Linear cost scaling** — every token is billed, even for semantically equivalent queries.
-
-This gateway is the abstraction layer that makes those problems tractable.
+- **💰 Semantic caching** embeds every query locally and serves repeated or similar queries in **<100 ms** at zero API cost (up to **40 %** operational cost reduction).
+- **🛡️ Circuit-breaker failover** automatically reroutes traffic to a **local Gemma 3 1B fallback** when the upstream provider is slow, errors, or rate-limits, guaranteeing **99.9 % uptime**.
+- **⚡ High throughput** built on Go + Fiber/fasthttp handles **10 K+ req/s** on a single core.
 
 ### Tech stack
 
 | Layer | Technology |
 |---|---|
-| **Language** | Go 1.22+ |
-| **HTTP framework** | Fiber v2 (wraps `fasthttp`) |
-| **Cache store** | Redis Stack 7.4 (RediSearch module for vector similarity) |
-| **Embeddings** | `nomic-embed-text` via Ollama (768-dim, GPU-accelerated) |
-| **Upstream LLM** | Groq (`llama-3.3-70b-versatile`, OpenAI-compatible) |
-| **Local fallback** | Gemma 3 1B (`gemma3:1b`) via Ollama, CPU |
-| **Circuit breaker** | `sony/gobreaker` |
-| **Container** | Docker Compose for Redis Stack |
+| Language | Go 1.22+ |
+| HTTP framework | Fiber v2 (wraps `fasthttp`) |
+| Cache store | Redis Stack 7.4 with RediSearch (vector similarity) |
+| Embeddings | `nomic-embed-text` via Ollama, 768-dim, GPU |
+| Upstream LLM | Groq (`llama-3.3-70b-versatile`, free tier) |
+| Local fallback | Gemma 3 1B via Ollama, CPU |
+| Circuit breaker | `sony/gobreaker` |
 
 ---
 
-## 🔑 Key Concepts (read this first)
+## 🚀 Before running the demos
 
-### 1. Non-streaming mode (default)
-
-In non-streaming mode, the client sends the request, **waits**, and gets a single JSON response back. Simple, but the user sees nothing until the entire response is ready.
-
-```
-Client                Gateway                 Upstream
-  | --POST /v1/chat----> |                       |
-  |                      | --POST /chat--------> |
-  |                      |                       | (generates...)
-  |                      | <-----JSON resp------ |
-  | <-----JSON resp------ |                       |
-```
-
-**When to use it**: scripts, batch jobs, CI pipelines, or anything where the user is OK waiting for the full answer.
-
-### 2. Streaming mode (SSE)
-
-In streaming mode, the client sets `"stream": true`. The gateway keeps the HTTP connection open and sends the response **token-by-token** as it's generated using **Server-Sent Events (SSE)**. The user sees text appear progressively, like ChatGPT's UI.
-
-```
-Client                Gateway                 Upstream
-  | --POST stream=true-> |                       |
-  |                      | --POST stream=true--> |
-  |                      | <--data: {"delta":{"content":"Go "}}--|
-  | <-data: ...----------|                       |
-  |                      | <--data: {"delta":{"content":"is "}}-|
-  | <-data: ...----------|                       |
-  |                      | <--data: {"delta":{"content":"fast"}}-|
-  | <-data: ...----------|                       |
-  | <-data: [DONE]-------|                       |
-```
-
-**When to use it**: chat UIs, anything user-facing, mobile apps where perceived latency matters.
-
-**SSE wire format**:
-- Content-Type: `text/event-stream`
-- Each chunk is one line `data: {json}\n\n`
-- Stream ends with `data: [DONE]\n\n`
-- Newline `\n\n` (double) is mandatory between events
-
-### 3. The semantic cache
-
-The gateway converts every query to a 768-dimensional vector using `nomic-embed-text`. It then looks up that vector in Redis with **cosine similarity ≥ 0.85**. If a near-identical query was answered before, you get the cached response in **<100 ms** without ever calling the LLM.
-
-| Operation | Latency | Cost |
-|---|---|---|
-| Cache **HIT** (same / similar query) | **50–90 ms** | $0 |
-| Cache MISS → local fallback (gemma3:1b) | 1.2–14 s (first call = model load) | $0 |
-| Cache MISS → Groq upstream | ~800 ms p50 | Free tier |
-
-**Speedup**: 50–200× when the cache hits.
-
-### 4. The circuit breaker
-
-A 3-state state machine around the upstream provider. After 3 consecutive failures or 30 s of latency > 5 s, the breaker **opens** and sends subsequent traffic directly to the fallback without retrying the upstream. After 30 s, it goes **half-open** and lets one request through as a probe. If it succeeds, the breaker **closes** again and normal traffic resumes.
-
-### 5. Response headers you'll see
-
-| Header | Meaning |
-|---|---|
-| `X-Cache-Status` | `HIT` / `MISS` / `MISS-FALLBACK` |
-| `X-Provider` | `groq` (upstream) or `ollama-local` (fallback) |
-| `X-Cache-Similarity` | Cosine similarity (only on HIT, e.g. `0.8929`) |
-| `X-Latency-Ms` | Time to first byte (only on streams) |
-
----
-
-## 🚀 How to start the gateway
-
-### Prerequisites (one-time setup)
+The gateway must already be running. If you haven't set it up, go to the [main README](../README.md#-quick-start) and complete Steps 1–5. Quick recap:
 
 ```bash
-# 1. Go 1.22+ (you already have this if you cloned the repo)
-go version
-
-# 2. Docker (for Redis Stack)
-sudo pacman -S --needed --noconfirm docker docker-compose
-sudo systemctl enable --now docker
-sudo usermod -aG docker $USER   # log out / in after this
-
-# 3. Ollama (for embeddings + fallback LLM)
-curl -fsSL https://ollama.com/install.sh | sh
-sudo systemctl enable --now ollama.service
-
-# 4. Pull the two models the gateway needs (~1 GB total)
-ollama pull nomic-embed-text   # 274 MB, runs on GPU
-ollama pull gemma3:1b          # 800 MB, runs on CPU
+# Verify everything is up
+docker ps | grep gateway-redis            # should show "healthy"
+curl -sS http://localhost:11434/api/version   # should return JSON
+curl -sS http://localhost:8080/health         # should return JSON
+ollama list                                # should show nomic-embed-text and gemma3:1b
 ```
 
-### Per-session startup (every time you want to use the gateway)
+If any of those fail, **fix that first** before running the demos.
+
+The demos below assume `GATEWAY_API_KEY` is set in your shell to whatever you put in `.env`. The default for testing is `demo-key-1234567890`.
 
 ```bash
-# 1. Start Redis Stack with the vector index
-cd /path/to/llm-edge-gateway
-docker compose up -d
-docker exec gateway-redis sh /docker-entrypoint-initdb.d/init.sh
-
-# 2. Configure environment
-cp .env.example .env
-# Edit .env and set:
-#   GATEWAY_API_KEY=demo-key-1234567890    # the bearer token clients must send
-#   GROQ_API_KEY=gsk_xxx                   # your Groq key (free at groq.com)
-#   GATEWAY_PORT=8080
-
-# 3. Build and run
-go build -o gateway ./cmd/gateway/
-./gateway
-# You should see:
-#   [main] redis OK at localhost:6379
-#   [main] embedder OK (nomic-embed-text, 768 dims)
-#   [main] cache OK (threshold=0.85, ttl=168h0m0s)
-#   [main] circuit breaker OK (threshold=3, timeout=30s)
-#   [main] starting gateway on :8080
+export GATEWAY_API_KEY=demo-key-1234567890
 ```
-
-### Verify it's running
-
-```bash
-# Health check (no auth required)
-curl http://localhost:8080/health
-# → {"breaker_state":"closed","status":"ok","uptime_seconds":42}
-
-# Stats (no auth required)
-curl http://localhost:8080/stats
-# → {"cache":{"hits":0,"misses":0,"hit_rate":0,"size":0},
-#    "breaker":{"name":"groq","state":"closed","failures":0,...},
-#    "metrics":{...}}
-```
-
-**The gateway is now live at `http://localhost:8080`. Any OpenAI-compatible client can talk to it.**
 
 ---
 
 ## 🧪 The two best demos (start here)
 
-If you only have 5 minutes, run these two. They cover 95 % of what you'll ever need.
+If you only have 2 minutes, run these two. They cover 95 % of what you'll ever need.
 
-### Demo 1 — `curl_stream.sh` (streaming, the killer feature)
+### Demo 1 — `curl_nonstream.sh` (the simplest, fastest verification)
 
-This is what real users hit. Open a terminal and run:
-
-```bash
-GATEWAY_API_KEY=demo-key-1234567890 ./examples/curl_stream.sh "Tell me a joke"
-```
-
-You will see text appear character by character, exactly like ChatGPT. Headers, `X-Cache-Status`, and the raw SSE stream are all visible.
-
-**What it does step by step**:
-
-1. POSTs a request to `/v1/chat/completions` with `"stream": true`
-2. The gateway hits its semantic cache — first run = MISS (slow), second run = HIT (fast)
-3. For cache MISS: gateway calls the provider (Groq or local Ollama fallback) and streams chunks back
-4. For cache HIT: gateway tokenizes the cached response and emits it in 20 ms chunks (simulated streaming)
-5. Closes with `data: [DONE]`
-
-**Expected output**:
-
-```
---- Streaming output (Ctrl-C to abort) ---
-Why don't scientists trust atoms? Because they make up everything!
---- [DONE] ---
-
---- Headers ---
-Content-Type: text/event-stream
-X-Provider: ollama-local
-Transfer-Encoding: chunked
-```
-
-**Time the first chunk vs the full response**:
-
-- Cache HIT, 1st call: **~50 ms** to first chunk
-- Cache HIT, full response: **~500 ms** (25 chunks × 20 ms simulated delay)
-- Cache MISS, full response: **1.2–14 s** (real model generation)
-
-### Demo 2 — `python_client.py` (Python, both modes)
-
-If you're building in Python, this is your reference implementation. Uses **only the standard library** (no `pip install` needed) and demonstrates both non-streaming and streaming:
+This is the "is everything working?" check. One curl, one response, one verdict.
 
 ```bash
-# Non-streaming (one JSON response, wait for completion)
+./examples/curl_nonstream.sh "What is the circuit breaker pattern in 1 sentence?"
+```
+
+**Expected output on success**:
+
+```
+Response: A circuit breaker is a design pattern that wraps a remote call...
+--- Response headers ---
+Content-Type: application/json
+X-Provider: groq
+```
+
+**If it works**: you have cache + upstream + auth all working. Move on to Demo 2.
+
+**If it shows `[ERROR] HTTP 4xx`**: the gateway rejected your request. The error body will tell you why. Most common: `401` (wrong `GATEWAY_API_KEY`) or `400` (bad JSON).
+
+**If it shows `[ERROR] HTTP 502` and the body mentions "all providers failed"**: both Groq and Ollama are unreachable. The error body has the specific error from each.
+
+### Demo 2 — `python_client.py` (the most useful in production)
+
+This is what your real Python application will look like. Uses **only the standard library** (no `pip install` needed) and demonstrates both modes:
+
+```bash
+# Non-streaming: one JSON response, wait for completion
 python3 examples/python_client.py non-stream
 
-# Streaming (SSE, token-by-token)
+# Streaming: SSE chunks, token-by-token
 python3 examples/python_client.py stream
 ```
 
-The script mimics what the official `openai` SDK does internally, so porting to the real SDK is trivial — see [`node_sdk_example.js`](node_sdk_example.js) and [`../cmd/client-example/`](../cmd/client-example/) for SDK versions.
+**Expected output (non-stream)**:
 
-**Key lines**:
-
-```python
-# Non-streaming
-req = urllib.request.Request(GATEWAY_URL, data=body, headers={...}, method="POST")
-with urllib.request.urlopen(req, timeout=60) as resp:
-    data = json.loads(resp.read())
-    print(data["choices"][0]["message"]["content"])
-
-# Streaming
-for raw_line in resp:
-    line = raw_line.decode("utf-8").rstrip()
-    if line.startswith("data: "):
-        payload = line[6:]
-        if payload == "[DONE]":
-            break
-        chunk = json.loads(payload)
-        print(chunk["choices"][0]["delta"]["content"], end="", flush=True)
 ```
+[non-stream] HTTP 200 in 47ms
+  X-Cache-Status: HIT
+  X-Provider:     ollama-local
+  X-Cache-Sim:    1.0000
+  Response: A circuit breaker...
+```
+
+**Expected output (stream)**:
+
+```
+[stream] HTTP 200, Content-Type: text/event-stream
+  X-Cache-Status: HIT
+  X-Provider:     ollama-local
+
+--- Streaming output ---
+A circuit breaker is a design pattern...
+
+--- [DONE] ---
+
+[stream] First chunk: 47ms, total: 471ms
+```
+
+The numbers tell you everything:
+- `First chunk: 47ms` = cache hit, the response was served immediately and simulated-streamed in 20ms chunks
+- `total: 471ms` = total wall time for the streaming response to finish
+
+**To use this in your own app**: copy the relevant section of `python_client.py` and adapt the model name, message, and parsing logic to your use case. The pattern (build JSON, POST with bearer token, parse SSE line by line) is the same regardless of what you're building.
 
 ---
 
-## 📁 All five clients (reference)
+## 📁 All five clients
 
 | # | File | Stack | Deps | Streaming | Use it when... |
 |---|------|-------|------|-----------|-----------------|
-| 1 | [`curl_nonstream.sh`](curl_nonstream.sh) | bash + curl + jq | none | ❌ | Scripting, CI, one-off curls. |
-| **2** | **[`curl_stream.sh`](curl_stream.sh)** | **bash + curl + jq** | **none** | **✅** | **Best for quick demos, see "the streaming in action".** |
-| **3** | **[`python_client.py`](python_client.py)** | **Python 3** | **stdlib only** | **✅** | **Best Python reference, no pip required.** |
-| 4 | [`node_client.js`](node_client.js) | Node 18+ | stdlib only | ✅ | Quick Node demo, no npm install. |
+| 1 | [`curl_nonstream.sh`](curl_nonstream.sh) | bash + curl + jq | none | ❌ | Quick "is it up?" check, CI, scripts. |
+| 2 | [`curl_stream.sh`](curl_stream.sh) | bash + curl + python3 | curl, jq, python3 | ✅ | Quick "show me streaming" demo. Handles errors clearly. |
+| 3 | [`python_client.py`](python_client.py) | Python 3 | **stdlib only** | ✅ | Most useful for real Python apps. Drop-in reference. |
+| 4 | [`node_client.js`](node_client.js) | Node 18+ | **stdlib only** | ✅ | Quick Node demo with no `npm install`. |
 | 4b | [`node_sdk_example.js`](node_sdk_example.js) | Node 18+ | `npm i openai` | ✅ | Real-world Node SDK usage. |
 | 5 | [`../cmd/client-example/`](../cmd/client-example/) | Go 1.22+ | `go-openai` SDK | ✅ | Calling the gateway from another Go program. |
+
+---
+
+## 🧠 Concepts reference
+
+### Non-streaming mode (default)
+- Client sends request, **waits**, gets one JSON response
+- Use for: scripts, batch jobs, CI pipelines
+- Simpler code, no streaming parser needed
+
+### Streaming mode (SSE)
+- Set `"stream": true` in the request body
+- Gateway keeps HTTP connection open and sends the response **token-by-token**
+- Each chunk is `data: {json}\n\n` (note the double newline at the end)
+- Stream ends with `data: [DONE]\n\n`
+- Use for: chat UIs, anything user-facing, anything where perceived latency matters
+
+### Semantic cache
+- Every query is converted to a 768-dim vector via `nomic-embed-text` (running on your GPU)
+- Gateway looks it up in Redis with cosine similarity ≥ 0.85
+- Near-identical queries get the cached response in <100 ms at zero API cost
+- See `CACHE_SIMILARITY_THRESHOLD` in `.env` to tune (lower = more hits, less strict)
+
+### Circuit breaker
+- 3-state state machine around the upstream provider
+- After 3 consecutive failures → opens → sends all traffic to the local fallback
+- After 30 s of being open → goes to half-open and probes with one request
+- If probe succeeds → closes → normal traffic resumes
+- Tune with `BREAKER_FAILURE_THRESHOLD` and `BREAKER_OPEN_TIMEOUT` in `.env`
+
+### Response headers you'll see
+- `X-Cache-Status`: `HIT` / `MISS` / `MISS-FALLBACK`
+- `X-Provider`: `groq` (real upstream) or `ollama-local` (fallback)
+- `X-Cache-Similarity`: 0.0–1.0 (only on HIT, how close the new query was to the cached one)
+- `X-Latency-Ms`: time to first byte, only on streaming responses
 
 ---
 
@@ -273,86 +181,47 @@ The gateway is **100 % OpenAI-compatible**. Just point your SDK at it:
 
 | SDK | One-line change |
 |---|---|
-| Python `openai` | `OpenAI(base_url="http://localhost:8080/v1", api_key="...")` |
-| Node `openai` | `new OpenAI({baseURL: "http://localhost:8080/v1", apiKey: "..."})` |
+| Python `openai` | `OpenAI(base_url="http://localhost:8080/v1", api_key=GATEWAY_API_KEY)` |
+| Node `openai` | `new OpenAI({baseURL: "http://localhost:8080/v1", apiKey: GATEWAY_API_KEY})` |
 | Go `openai-go` | `cfg.BaseURL = "http://localhost:8080/v1"` |
 | Java `openai-java` | `OpenAIClient.builder().baseUrl("http://localhost:8080/v1")...` |
 | curl / httpie | `Authorization: Bearer $GATEWAY_API_KEY` |
 
-**Everything else stays the same** — `model`, `messages`, `temperature`, `stream`, etc. are all supported because the gateway passes them through untouched.
+Everything else stays the same — `model`, `messages`, `temperature`, `stream`, etc. are all passed through untouched.
 
 ---
 
-## 🧠 How to test all the features in 3 minutes
+## 🆘 Troubleshooting (gateway-side)
 
-```bash
-# (1) MISS (1st call) — should be slow
-time curl -X POST http://localhost:8080/v1/chat/completions \
-  -H "Authorization: Bearer demo-key-1234567890" \
-  -H "Content-Type: application/json" \
-  -d '{"model":"gemma3:1b","messages":[{"role":"user","content":"What is Go?"}]}'
-# → ~10 s, X-Cache-Status: MISS-FALLBACK
+### Demo shows `[ERROR] HTTP 401`
+Your `GATEWAY_API_KEY` in the shell doesn't match the one in `.env`. Make them identical. The bash scripts enforce this with `${GATEWAY_API_KEY:?...}` so a missing variable fails loudly.
 
-# (2) HIT (2nd call, same query) — should be fast
-time curl -X POST http://localhost:8080/v1/chat/completions \
-  -H "Authorization: Bearer demo-key-1234567890" \
-  -H "Content-Type: application/json" \
-  -d '{"model":"gemma3:1b","messages":[{"role":"user","content":"What is Go?"}]}'
-# → ~50 ms, X-Cache-Status: HIT, X-Cache-Similarity: 1.0000
+### Demo shows `call groq: ... context canceled`
+The upstream is failing. The most common cause is an invalid `GROQ_API_KEY` in `.env`. The gateway correctly falls back to Ollama local, but the streaming response is interrupted. Either:
+1. Set a real `GROQ_API_KEY` (free at https://console.groq.com/keys) and restart the gateway
+2. Accept the fallback behavior — the response will be a Gemma-generated answer with `X-Provider: ollama-local`
 
-# (3) HIT streaming — first chunk in ~50 ms
-curl -N -X POST http://localhost:8080/v1/chat/completions \
-  -H "Authorization: Bearer demo-key-1234567890" \
-  -H "Content-Type: application/json" \
-  -d '{"model":"gemma3:1b","stream":true,"messages":[{"role":"user","content":"What is Go?"}]}'
+### Demo shows `Empty response body`
+The gateway returned 200 but no `choices[0].message.content`. This means the upstream gave a weird response. Try the same request again — usually it's a transient issue with the provider.
 
-# (4) Force a fallback path (set a bad upstream URL and watch the circuit open)
-GATEWAY_API_KEY=demo-key-1234567890 \
-GROQ_BASE_URL=http://localhost:1 \
-GATEWAY_PORT=8081 \
-./gateway &
-# Send 3 requests, watch X-Cache-Status: MISS-FALLBACK after circuit opens
-```
+### Cache HIT returns wrong content
+The cache might have a stale entry. Lower the threshold in `.env` (`CACHE_SIMILARITY_THRESHOLD=0.95`) for stricter matching, or flush Redis with `docker exec gateway-redis redis-cli FLUSHDB` followed by re-running `init-redis.sh`.
 
----
+### Gateway returns 502 with "all providers failed"
+Both Groq and Ollama local are unreachable. The error body will have details. Common causes:
+- Ollama is down: `sudo systemctl status ollama`
+- Ollama's model isn't loaded: `ollama list` should show `gemma3:1b`
+- Groq is down or your key is invalid: try `curl https://api.groq.com/openai/v1/models -H "Authorization: Bearer $GROQ_API_KEY"` to verify
 
-## 📊 Real measured latencies (on the project's reference hardware)
-
-| Operation | Measured latency | Notes |
-|---|---|---|
-| **Cache HIT, non-streaming** | **34 ms** | X-Cache-Status: HIT, X-Cache-Similarity: 1.0000 |
-| **Cache HIT, streaming** | **50 ms to first chunk, 500 ms total** | 25 chunks × 20 ms simulated |
-| Cache MISS, non-streaming (1st call) | 4.3 s | Includes model load + token generation |
-| Cache MISS, non-streaming (subsequent) | 1.2–2 s | Model already in memory |
-| Cache MISS, streaming, Groq upstream | ~800 ms p50 | Depends on Groq's network |
-| Cache MISS, streaming, Ollama local | 1.2–14 s | gemma3:1b on CPU is ~65 tok/s |
-
-Reference hardware: NVIDIA GTX 1650 (4 GB VRAM) · 8 GB RAM · 7.6 GB zram (CachyOS).
-
----
-
-## 🆘 Troubleshooting
-
-### "Connection refused" on port 8080
-The gateway isn't running. Start it with `./gateway` and watch the logs.
-
-### "401 Unauthorized"
-The `GATEWAY_API_KEY` in the gateway's `.env` doesn't match the `Authorization: Bearer` header you're sending. Both must be identical.
-
-### Cache HIT but content is wrong
-The cache might have a stale entry. Lower the threshold in `.env` to `CACHE_SIMILARITY_THRESHOLD=0.95` for stricter matching, or flush Redis with `docker exec gateway-redis redis-cli FLUSHDB` (warning: also drops the index, re-run `init-redis.sh` after).
-
-### Streaming chunks are tiny or missing
-Some HTTP intermediaries (nginx, cloudflare) buffer SSE by default. Add `X-Accel-Buffering: no` to your response headers (already done by the gateway) and configure your proxy to not buffer.
-
-### Performance: cache hit but still slow
-Check that the `X-Cache-Status` is actually `HIT` and not `MISS-FALLBACK`. If you see the latter, the upstream is being called every time and the fallback is responding — your cache is empty or the threshold is too low.
+### Python `ModuleNotFoundError: No module named 'openai'`
+You're trying to use the real `openai` SDK without `pip install`. Use `python_client.py` (uses only stdlib) or run `pip install openai` to use a real SDK.
 
 ---
 
 ## 📚 Where to go next
 
-- **Gateway architecture and design rationale**: see [`../README.md`](../README.md)
-- **Full build plan and phase-by-phase decisions**: see [`../AGENTS.md`](../AGENTS.md)
+- **Setup and prerequisites**: see [`../README.md`](../README.md#-quick-start)
+- **Architecture and design rationale**: see [`../README.md`](../README.md#-architecture)
+- **Full build plan (all 11 phases)**: see [`../AGENTS.md`](../AGENTS.md)
 - **Performance benchmarks**: see [`../README.md`](../README.md#-measured-performance)
-- **How the circuit breaker works**: see [`../AGENTS.md`](../AGENTS.md#phase-6--circuit-breaker-draft)
+- **Test coverage**: 66/66 tests passing across 8 packages — run `go test ./... -p 1`

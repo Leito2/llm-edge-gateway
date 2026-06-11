@@ -18,7 +18,7 @@ The platform intercepts every request, embeds the query locally with `nomic-embe
 
 When the upstream provider degrades (latency, errors, rate limits), a circuit breaker reroutes traffic to a **local Gemma 3 1B instance** running via Ollama, guaranteeing **99.9 % uptime** and complete data sovereignty.
 
-Built entirely in Go using the **Fiber framework** (wrapping `fasthttp`), the system leverages Go's native goroutine model to process **10 K+ req/s** on a single core with minimal memory footprint and sub-second routing overhead. Zero Python, zero Node, zero external runtime dependencies — just a single 14 MB static binary.
+Built entirely in Go using the **Fiber framework** (wrapping `fasthttp`), the system leverages Go's native goroutine model to process **10 K+ req/s** on a single core with negligible memory footprint and sub-second routing overhead. Zero Python, zero Node, zero external runtime dependencies — just a single 14 MB static binary.
 
 ### Key Capabilities
 
@@ -79,72 +79,163 @@ X-Cache-Similarity: 1.0000
 
 ## 🚀 Quick Start
 
-### Prerequisites (one-time)
+This is the **complete, step-by-step setup**. Follow it in order. Estimated time: 10–15 minutes on a fresh machine.
+
+### Step 1 — Install system dependencies (one-time)
 
 ```bash
-# Go 1.22+, Docker, Ollama
+# Go 1.22+ (you have it if you cloned this repo)
 go version
+
+# Docker (for Redis Stack)
 sudo pacman -S --needed --noconfirm docker docker-compose
 sudo systemctl enable --now docker
-sudo usermod -aG docker $USER   # log out / in after this
+sudo usermod -aG docker $USER    # log out / in for this to take effect
+
+# Ollama (for embeddings + local fallback)
 curl -fsSL https://ollama.com/install.sh | sh
 sudo systemctl enable --now ollama.service
 
-# Pull the two models the gateway needs (~1 GB total)
-ollama pull nomic-embed-text   # 274 MB, runs on GPU
-ollama pull gemma3:1b          # 800 MB, runs on CPU
+# Verify Ollama works
+curl -sS http://localhost:11434/api/version
+# Should return: {"version":"0.x.x"}
 ```
 
-### Per-session
+### Step 2 — Pull the two AI models (one-time, ~1 GB)
 
 ```bash
-# 1. Clone and configure
+# Embedding model: 274 MB, runs on GPU
+ollama pull nomic-embed-text
+
+# Local fallback LLM: 815 MB, runs on CPU
+# (we use 1b because gemma4:e4b is too large for 4GB VRAM/8GB RAM;
+#  see AGENTS.md for the model selection rationale)
+ollama pull gemma3:1b
+
+# Verify
+ollama list
+# Should show both models
+```
+
+### Step 3 — Clone and configure
+
+```bash
+# Clone
 git clone https://github.com/Leito2/llm-edge-gateway.git
 cd llm-edge-gateway
+
+# Create your .env from the template
 cp .env.example .env
-# Edit .env and set GATEWAY_API_KEY (and GROQ_API_KEY for the real upstream)
 
-# 2. Start Redis Stack with the vector index
-docker compose up -d
-docker exec gateway-redis sh /docker-entrypoint-initdb.d/init.sh
-
-# 3. Build and run the gateway
-go build -o gateway ./cmd/gateway/
-./gateway
-# You should see:
-#   [main] redis OK at localhost:6379
-#   [main] embedder OK (nomic-embed-text, 768 dims)
-#   [main] cache OK (threshold=0.85, ttl=168h0m0s)
-#   [main] circuit breaker OK (threshold=3, timeout=30s)
-#   [main] starting gateway on :8080
+# Open .env in your editor and set ONLY these two values:
+#   GATEWAY_API_KEY=<any-random-string-you-make-up>
+#   GROQ_API_KEY=<your-real-groq-key-from-groq.com>
+#
+# Get a free Groq key at https://console.groq.com/keys
+# Leave the rest of the .env file as-is (the defaults are sensible).
 ```
 
-### Try it in 30 seconds
+**Critical**: `GROQ_API_KEY` must be a real Groq key. A fake value like `gsk_xxx` will make the gateway fail every request to the upstream (and only work via the local fallback). See "Troubleshooting" below for the symptoms.
+
+### Step 4 — Start Redis Stack (the cache backend)
 
 ```bash
-# First call: MISS-FALLBACK (slow, model loads into memory)
+# Start the container
+docker compose up -d
+
+# Wait for it to be healthy (~5 seconds)
+docker ps | grep gateway-redis
+# Should show: "Up X seconds (healthy)"
+
+# Create the vector index (only needed once, but the script is idempotent)
+docker exec gateway-redis sh /docker-entrypoint-initdb.d/init.sh
+# Should end with: [init-redis] Done.
+```
+
+### Step 5 — Build and run the gateway
+
+```bash
+# Compile (creates ./gateway binary, ~14 MB)
+go build -o gateway ./cmd/gateway/
+
+# Run it
+./gateway
+```
+
+You should see this output (the gateway is ready when you see "starting gateway on :8080"):
+
+```
+2026/06/11 12:34:56 [main] redis OK at localhost:6379
+2026/06/11 12:34:57 [main] embedder OK (nomic-embed-text, 768 dims)
+2026/06/11 12:34:57 [main] cache OK (threshold=0.85, ttl=168h0m0s)
+2026/06/11 12:34:57 [main] circuit breaker OK (threshold=3, timeout=30s)
+2026/06/11 12:34:57 [main] starting gateway on :8080
+
+ ┌───────────────────────────────────────────────────┐
+ │                 llm-edge-gateway                  │
+ │                  Fiber v2.52.13                   │
+ │               http://127.0.0.1:8080               │
+ ...
+```
+
+**The gateway is now live at `http://localhost:8080`.** Leave this terminal open; the gateway runs in the foreground.
+
+### Step 6 — Try it in 30 seconds
+
+Open a **second terminal** (keep the gateway running in the first one) and run:
+
+```bash
+# Health check (no auth)
+curl http://localhost:8080/health
+# → {"breaker_state":"closed","status":"ok","uptime_seconds":3}
+
+# First chat: MISS (slow — model loads into RAM)
 curl -X POST http://localhost:8080/v1/chat/completions \
   -H "Authorization: Bearer $GATEWAY_API_KEY" \
   -H "Content-Type: application/json" \
-  -d '{"model":"gemma3:1b","messages":[{"role":"user","content":"What is Go?"}]}'
+  -d '{"model":"llama-3.3-70b-versatile","messages":[{"role":"user","content":"What is Go?"}]}'
 
-# Second call (same query): HIT in ~50 ms
+# Same query again: HIT (fast, ~50ms)
 curl -X POST http://localhost:8080/v1/chat/completions \
   -H "Authorization: Bearer $GATEWAY_API_KEY" \
   -H "Content-Type: application/json" \
-  -d '{"model":"gemma3:1b","messages":[{"role":"user","content":"What is Go?"}]}'
+  -d '{"model":"llama-3.3-70b-versatile","messages":[{"role":"user","content":"What is Go?"}]}'
 
-# Streaming (chunks arrive progressively)
+# Streaming: chunks appear progressively
 curl -N -X POST http://localhost:8080/v1/chat/completions \
   -H "Authorization: Bearer $GATEWAY_API_KEY" \
   -H "Content-Type: application/json" \
-  -d '{"model":"gemma3:1b","stream":true,"messages":[{"role":"user","content":"What is Go?"}]}'
+  -d '{"model":"llama-3.3-70b-versatile","stream":true,"messages":[{"role":"user","content":"What is Go?"}]}'
 
-# Inspect metrics
+# Stats
 curl http://localhost:8080/stats
 ```
 
 **For 5 ready-to-use client examples in curl, Python, Node.js, and Go, see [`examples/`](./examples/).**
+
+---
+
+## 🔑 Key Concepts
+
+### Non-streaming mode (default)
+Client sends request, **waits**, gets a single JSON response. Simple, but the user sees nothing until the full response is ready. Use for scripts, batch jobs, CI.
+
+### Streaming mode (SSE)
+Set `"stream": true`. The gateway keeps the HTTP connection open and sends the response **token-by-token** using Server-Sent Events. The user sees text appear progressively. Use for chat UIs, anything user-facing.
+
+SSE wire format: `Content-Type: text/event-stream`, chunks are `data: {json}\n\n` lines, ends with `data: [DONE]\n\n`.
+
+### The semantic cache
+Every query is converted to a 768-dim vector via `nomic-embed-text`. We look it up in Redis with cosine similarity ≥ 0.85. Near-identical queries get the cached response in <100 ms.
+
+### The circuit breaker
+3-state state machine around the upstream. After 3 consecutive failures or 30 s of latency > 5 s, it **opens** and sends subsequent traffic directly to the fallback. After 30 s, it goes **half-open** to probe. If the probe succeeds, it **closes** and normal traffic resumes.
+
+### Response headers you'll see
+- `X-Cache-Status`: `HIT` / `MISS` / `MISS-FALLBACK`
+- `X-Provider`: `groq` (upstream) or `ollama-local` (fallback)
+- `X-Cache-Similarity`: cosine similarity (only on HIT, e.g. `0.8929`)
+- `X-Latency-Ms`: time to first byte (only on streams)
 
 ---
 
@@ -168,11 +259,48 @@ llm-edge-gateway/
 ├── pkg/types/                    # Shared structs
 ├── examples/                     # 5 ready-to-use client examples
 ├── scripts/                      # init-redis.sh, pull-models.sh
+├── docs/                         # Architecture diagrams
 ├── docker-compose.yml            # Redis Stack
 ├── .env.example                  # Config template
 ├── AGENTS.md                     # Full build plan
 └── README.md                     # This file
 ```
+
+---
+
+## 🆘 Troubleshooting
+
+### "Connection refused" on port 8080
+The gateway isn't running. In the first terminal, run `./gateway` and watch the logs. If it crashes immediately, see the next item.
+
+### Gateway crashes immediately with "config load failed: required key GATEWAY_API_KEY missing value"
+You didn't create `.env`, or the `GATEWAY_API_KEY` line is missing/commented. Run `cp .env.example .env` and edit it.
+
+### Gateway says "redis ping failed"
+Redis Stack is not running. Run `docker compose up -d` and verify with `docker ps | grep gateway-redis` (should say "healthy").
+
+### Gateway says "embedder warmup failed"
+Ollama is not running, or the embedding model isn't pulled. Run:
+```bash
+sudo systemctl start ollama
+ollama pull nomic-embed-text
+curl -sS http://localhost:11434/api/version
+```
+
+### Every request gets `X-Provider: ollama-local` and `X-Cache-Status: MISS-FALLBACK`
+Your `GROQ_API_KEY` in `.env` is invalid, expired, or you didn't set one. The gateway correctly falls back to local, but you want the real upstream. Get a free key at https://console.groq.com/keys and update `.env`.
+
+### `curl_stream.sh` shows `[ERROR chunks received from gateway]`
+The streaming response contained an error event. The script prints the error message at the end. Most common causes:
+- Invalid `GROQ_API_KEY` (see above)
+- `GROQ_BASE_URL` set to a non-Groq URL like `http://localhost:11434` (Ollama has a different API path)
+- Network connectivity issues
+
+### Cache HIT but content is wrong
+The cache might have a stale entry. Lower the threshold in `.env` (`CACHE_SIMILARITY_THRESHOLD=0.95`) for stricter matching, or flush Redis with `docker exec gateway-redis redis-cli FLUSHDB` followed by re-running `init-redis.sh`.
+
+### Streaming chunks are tiny or missing
+Some HTTP intermediaries (nginx, cloudflare) buffer SSE by default. Add `X-Accel-Buffering: no` to your response headers (already done by the gateway) and configure your proxy to not buffer.
 
 ---
 
@@ -195,15 +323,6 @@ llm-edge-gateway/
 
 **Test coverage**: 66/66 tests passing across 8 packages
 (`auth`, `breaker`, `cache`, `config`, `embedder`, `fallback`, `providers`, `proxy`).
-
----
-
-## 🆘 Troubleshooting
-
-- **Ollama model not found**: `ollama list` to see installed models. `ollama pull gemma3:1b` to install.
-- **Redis connection refused**: `docker compose ps` to check if `gateway-redis` is running.
-- **Cache HIT with wrong content**: lower threshold in `.env` (`CACHE_SIMILARITY_THRESHOLD=0.95`) for stricter matching.
-- **Streaming not working**: some HTTP proxies (nginx, cloudflare) buffer SSE — add `proxy_buffering off;` in nginx.
 
 ---
 
