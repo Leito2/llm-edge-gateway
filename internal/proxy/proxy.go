@@ -27,15 +27,17 @@ import (
 type StreamProvider = providers.StreamProvider
 
 type Proxy struct {
-	Embedder  embedder.Embedder
-	Cache     *cache.SemanticCache
-	Breaker   *breaker.Breaker
-	Upstream  providers.Provider
-	UpstreamS providers.StreamProvider
-	Fallback  providers.Provider
-	FallbackS providers.StreamProvider
-	Metrics   *metrics.Metrics
-	StartTime time.Time
+	Embedder        embedder.Embedder
+	Cache           *cache.SemanticCache
+	Breaker         *breaker.Breaker
+	Upstream        providers.Provider
+	UpstreamS       providers.StreamProvider
+	UpstreamTimeout time.Duration
+	Fallback        providers.Provider
+	FallbackS       providers.StreamProvider
+	FallbackTimeout time.Duration
+	Metrics         *metrics.Metrics
+	StartTime       time.Time
 }
 
 func extractQuery(messages []types.ChatMessage) string {
@@ -379,7 +381,14 @@ func (p *Proxy) streamFromProvider(c *fiber.Ctx, req types.ChatRequest, query st
 		p.Metrics.UpstreamOK.Add(1)
 	}
 
-	streamCtx, cancel := context.WithCancel(c.Context())
+	streamTimeout := p.UpstreamTimeout
+	if isFallback && p.FallbackTimeout > 0 {
+		streamTimeout = p.FallbackTimeout
+	}
+	if streamTimeout <= 0 {
+		streamTimeout = 30 * time.Second
+	}
+	streamCtx, cancel := context.WithTimeout(context.Background(), streamTimeout)
 	defer cancel()
 
 	chunks, errs := provider.StreamChat(streamCtx, req)

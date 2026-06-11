@@ -90,15 +90,17 @@ func main() {
 	m := metrics.New()
 
 	p := &proxy.Proxy{
-		Embedder:  emb,
-		Cache:     c,
-		Breaker:   cb,
-		Upstream:  up,
-		UpstreamS: up,
-		Fallback:  fb,
-		FallbackS: fb,
-		Metrics:   m,
-		StartTime: time.Now(),
+		Embedder:        emb,
+		Cache:           c,
+		Breaker:         cb,
+		Upstream:        up,
+		UpstreamS:       up,
+		UpstreamTimeout: cfg.Upstream.Timeout,
+		Fallback:        fb,
+		FallbackS:       fb,
+		FallbackTimeout: cfg.Local.Timeout,
+		Metrics:         m,
+		StartTime:       time.Now(),
 	}
 
 	app := fiber.New(fiber.Config{
