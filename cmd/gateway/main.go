@@ -13,6 +13,7 @@ import (
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/logger"
 	"github.com/gofiber/fiber/v2/middleware/recover"
+	"github.com/joho/godotenv"
 	"github.com/redis/go-redis/v9"
 
 	"github.com/Leito2/llm-edge-gateway/internal/auth"
@@ -27,6 +28,21 @@ import (
 )
 
 func main() {
+	// Load .env file from the current directory (or the binary's directory)
+	// if it exists. Real env vars always take precedence over .env values.
+	// This is a convenience so users can just run `./gateway` after `cp
+	// .env.example .env` without having to `export $(cat .env | xargs)`.
+	envPath := ".env"
+	if _, err := os.Stat(envPath); err == nil {
+		if loadErr := godotenv.Load(envPath); loadErr != nil {
+			log.Printf("[main] warning: could not load %s: %v (continuing with real env)", envPath, loadErr)
+		} else {
+			log.Printf("[main] loaded config from %s", envPath)
+		}
+	} else {
+		log.Printf("[main] no .env found, using real environment variables")
+	}
+
 	cfg, err := config.Load()
 	if err != nil {
 		log.Fatalf("config load failed: %v", err)

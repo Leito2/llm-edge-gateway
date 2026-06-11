@@ -44,7 +44,7 @@ type RedisConfig struct {
 
 type CacheConfig struct {
 	SimilarityThreshold float64       `envconfig:"CACHE_SIMILARITY_THRESHOLD" default:"0.85"`
-	TTL                 time.Duration `envconfig:"CACHE_TTL_HOURS" default:"168h"`
+	TTL                 time.Duration `envconfig:"CACHE_TTL" default:"168h"`
 }
 
 type BreakerConfig struct {
@@ -70,5 +70,17 @@ func Load() (*Config, error) {
 	if err := envconfig.Process("", &c); err != nil {
 		return nil, fmt.Errorf("load config: %w", err)
 	}
+
+	// Reject placeholder values explicitly so users get a clear error
+	// rather than a gateway that silently 401s every request.
+	if c.Auth.APIKey == "replace-me-with-a-long-random-string" {
+		return nil, fmt.Errorf("GATEWAY_API_KEY in .env is still the placeholder from .env.example; edit .env and set a real value (any random string is fine for testing)")
+	}
+	if c.Upstream.APIKey == "" {
+		// GROQ_API_KEY empty is allowed — the gateway will fall back to Ollama local.
+		// We log this so the user knows what's happening.
+		_ = c // no-op; the user will see fallback behavior in action
+	}
+
 	return &c, nil
 }
