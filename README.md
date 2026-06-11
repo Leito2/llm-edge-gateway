@@ -233,6 +233,78 @@ curl http://localhost:8080/stats
 
 ---
 
+## ➕ Bonus — Pointing the Gateway at a Different Upstream
+
+Groq is the default upstream, but the gateway speaks the **OpenAI wire format**, so any OpenAI-compatible service works as a drop-in replacement. Only three values in `.env` need to change.
+
+### Example: serving `minimax M3` from a third-party provider
+
+Imagine you have a subscription that exposes an `minimax M3` model over an OpenAI-shaped endpoint. Edit `.env`:
+
+```bash
+# ---- Upstream LLM ----
+GROQ_API_KEY=sk-tu_api_key_real_de_opencode_go
+GROQ_BASE_URL=https://api.your-provider.com/v1
+GROQ_MODEL=minimax-M3
+GROQ_TIMEOUT=8s
+```
+
+The variable names keep the `GROQ_` prefix for backward compatibility, but the gateway does not care what the upstream actually is — it just does a `POST {GROQ_BASE_URL}/chat/completions` with `Authorization: Bearer {GROQ_API_KEY}` and an OpenAI-shaped JSON body. The cache, the circuit breaker, the auth middleware, and the streaming SSE all keep working unchanged.
+
+Restart the gateway so it picks up the new env values:
+
+```bash
+pkill -f "./gateway"
+cd /home/white/Projects/Go-LLM-Gateway
+./gateway
+```
+
+The same curl from Step 6 now routes to the new upstream. The response headers tell you where the answer came from:
+
+```bash
+curl -i -X POST http://localhost:8080/v1/chat/completions \
+  -H "Authorization: Bearer $GATEWAY_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"minimax-M3","messages":[{"role":"user","content":"What is Go?"}]}'
+```
+
+```
+HTTP/1.1 200 OK
+X-Cache-Status: MISS
+X-Provider: groq          ← name is fixed in code, not derived from the env var
+X-Latency-Ms: 812
+
+{"choices":[{"message":{"role":"assistant","content":"Go is a..."}}]}
+```
+
+Run the same curl again and the cache kicks in:
+
+```
+X-Cache-Status: HIT
+X-Provider: groq
+X-Cache-Similarity: 1.0000
+```
+
+> Note: the `X-Provider` header always reads `groq` because the field name is hard-coded in `internal/proxy/proxy.go`. The actual destination is whatever `GROQ_BASE_URL` points to. If you want a custom label per upstream, that is a 2-line change in the proxy.
+
+### Compatibility checklist
+
+Your provider must:
+- Accept `POST {base_url}/chat/completions`
+- Authenticate with `Authorization: Bearer <key>`
+- Accept and return OpenAI JSON shapes (`messages` / `choices` / `usage`)
+
+Services that qualify out of the box:
+- **OpenAI** — `GROQ_BASE_URL=https://api.openai.com/v1`, `GROQ_MODEL=gpt-4o-mini`
+- **Together** — `GROQ_BASE_URL=https://api.together.xyz/v1`
+- **Fireworks** — `GROQ_BASE_URL=https://api.fireworks.ai/inference/v1`
+- **OpenRouter** — `GROQ_BASE_URL=https://openrouter.ai/api/v1`
+- **Any local OpenAI-compatible server** — `llama.cpp --instruct`, `vLLM --openai-compatible`, or Ollama's `OLLAMA_OPENAI_COMPAT=1` mode
+
+The circuit breaker (`BREAKER_FAILURE_THRESHOLD`, `BREAKER_OPEN_TIMEOUT`) and the semantic cache (`CACHE_SIMILARITY_THRESHOLD`) keep their current values; they are upstream-agnostic.
+
+---
+
 ## 🔑 Key Concepts
 
 ### Non-streaming mode (default)
