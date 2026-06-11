@@ -329,6 +329,8 @@ $form.addEventListener("submit", async (e) => {
     const decoder = new TextDecoder();
     let buffer = "";
     let cacheStatus = "";
+    let chunksReceived = 0;
+    let streamError    = null;
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
@@ -341,6 +343,12 @@ $form.addEventListener("submit", async (e) => {
         if (data === "[DONE]") continue;
         let obj;
         try { obj = JSON.parse(data); } catch { continue; }
+        chunksReceived++;
+        console.log("[gw] chunk:", obj);
+        if (obj.error) {
+          streamError = obj.error.message || obj.error;
+          continue;
+        }
         const delta = obj.choices?.[0]?.delta?.content
                    || obj.choices?.[0]?.message?.content
                    || "";
@@ -354,8 +362,16 @@ $form.addEventListener("submit", async (e) => {
         }
       }
     }
-    activeBody.innerHTML = renderMarkdown(activeRaw);
-    setStatus(cacheStatus || "done", cacheStatus === "HIT" ? "hit" : "miss");
+    if (streamError) {
+      activeBody.innerHTML = `<em>Upstream error:</em>\n\n${escapeHTML(String(streamError))}\n\n<small>(gateway logs will have details — check the terminal where ./gateway is running)</small>`;
+      setStatus("upstream error", "error");
+    } else if (chunksReceived === 0) {
+      activeBody.innerHTML = `<em>No chunks received from the gateway.</em>\n\nThe stream ended without any data. Check the gateway terminal for errors.`;
+      setStatus("empty stream", "error");
+    } else {
+      activeBody.innerHTML = renderMarkdown(activeRaw);
+      setStatus(cacheStatus || "done", cacheStatus === "HIT" ? "hit" : "miss");
+    }
   } catch (err) {
     if (activeBody) activeBody.innerHTML = `<em>Network error: ${escapeHTML(String(err))}</em>`;
     setStatus("network error", "error");
