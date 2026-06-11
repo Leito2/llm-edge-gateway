@@ -71,52 +71,9 @@ X-Cache-Similarity: 1.0000
 
 ## 🏗️ Architecture
 
-```
-                          ┌──────────────────────┐
-                          │  Client Application  │
-                          └──────────┬───────────┘
-                                     │  POST /v1/chat/completions
-                                     │  Authorization: Bearer <key>
-                                     ▼
-                    ┌────────────────────────────────┐
-                    │       Go / Fiber Gateway        │
-                    │  (fasthttp, single binary)      │
-                    └────────────┬───────────────────┘
-                                 │
-                                 ▼
-                    ┌────────────────────────────────┐
-                    │  Embedder: nomic-embed-text    │
-                    │  (Ollama, GPU, <5ms)           │
-                    └────────────┬───────────────────┘
-                                 │  768-dim vector
-                                 ▼
-                    ┌────────────────────────────────┐
-                    │  Semantic Cache (Redis +        │
-                    │  RediSearch, KNN cosine)       │
-                    └────┬───────────────────────┬───┘
-                         │ HIT (≥0.85)           │ MISS
-                         │ <100ms                ▼
-                         │              ┌──────────────────────┐
-                ┌────────┴───┐          │   Circuit Breaker    │
-                │  Cached    │          │  (sony/gobreaker)    │
-                │  Response  │          └────┬─────────────┬───┘
-                └────────────┘               │             │
-                                             │ healthy     │ open / >5s
-                                             ▼             ▼
-                                    ┌──────────────┐  ┌──────────────┐
-                                    │  Upstream    │  │  Local       │
-                                    │  Groq /      │  │  Gemma 3 1B  │
-                                    │  OpenAI /    │  │  (Ollama,    │
-                                    │  Anthropic   │  │   CPU)       │
-                                    └──────┬───────┘  └──────┬───────┘
-                                           │                 │
-                                           └────────┬────────┘
-                                                    ▼
-                                          ┌──────────────────┐
-                                          │ Cache writeback  │
-                                          │ (best-effort)    │
-                                          └──────────────────┘
-```
+![LLM Edge Gateway architecture diagram](docs/images/architecture.png)
+
+*Request flow: Client → Go/Fiber Gateway → Local Embedder (Ollama, GPU) → Redis Vector Cache (KNN cosine) → Circuit Breaker → Upstream LLM (Groq) or Local Fallback (Gemma 3 1B on CPU) → Cache writeback.*
 
 ---
 

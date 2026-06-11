@@ -3,6 +3,12 @@
 > Five ready-to-use client implementations for talking to the LLM Edge Gateway.
 > Pick the one that matches your stack and copy-paste it into your project.
 
+## 🏗️ Architecture at a glance
+
+![LLM Edge Gateway architecture diagram](../docs/images/architecture.png)
+
+*Request flow: Client → Go/Fiber Gateway → Local Embedder (Ollama, GPU) → Redis Vector Cache (KNN cosine) → Circuit Breaker → Upstream LLM (Groq) or Local Fallback (Gemma 3 1B on CPU) → Cache writeback.*
+
 ---
 
 ## 🎯 Project Overview
