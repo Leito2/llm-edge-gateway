@@ -1,0 +1,373 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Gateway Chat</title>
+<style>
+  :root {
+    --bg:        #1a1814;
+    --bg-elev:   #25211c;
+    --bg-input:  #1f1c17;
+    --fg:        #ece5d3;
+    --fg-dim:    #8a8275;
+    --accent:    #d4a373;
+    --accent-hi: #e6b87a;
+    --border:    #2f2a23;
+    --ok:        #88c0a8;
+    --warn:      #d4a373;
+    --err:       #c97c5d;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; height: 100%; }
+  body {
+    background: var(--bg);
+    color: var(--fg);
+    font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", system-ui, sans-serif;
+    font-size: 15px;
+    line-height: 1.6;
+    display: flex;
+    flex-direction: column;
+    max-width: 780px;
+    margin: 0 auto;
+    padding: 0 18px;
+  }
+  header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 20px 0 16px;
+    border-bottom: 1px solid var(--border);
+  }
+  .logo {
+    width: 30px; height: 30px;
+    background: var(--accent);
+    color: var(--bg);
+    border-radius: 8px;
+    display: flex; align-items: center; justify-content: center;
+    font-weight: 700; font-size: 17px;
+  }
+  .title { font-weight: 600; letter-spacing: -0.01em; }
+  .key-input {
+    margin-left: auto;
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--fg);
+    padding: 6px 10px;
+    font-family: ui-monospace, "JetBrains Mono", "Fira Code", monospace;
+    font-size: 12px;
+    width: 220px;
+  }
+  .key-input:focus { outline: none; border-color: var(--accent); }
+  .clear {
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--fg-dim);
+    border-radius: 6px;
+    padding: 6px 10px;
+    font-size: 12px;
+    cursor: pointer;
+  }
+  .clear:hover { color: var(--fg); border-color: var(--accent); }
+
+  #status {
+    font-family: ui-monospace, "JetBrains Mono", monospace;
+    font-size: 11px;
+    color: var(--fg-dim);
+    padding: 8px 0 0;
+    min-height: 24px;
+  }
+  #status .pill {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 4px;
+    background: var(--bg-elev);
+    border: 1px solid var(--border);
+    margin-right: 6px;
+  }
+  #status .pill.hit     { color: var(--ok);   border-color: rgba(136,192,168,0.3); }
+  #status .pill.miss    { color: var(--warn); border-color: rgba(212,163,115,0.3); }
+  #status .pill.fallback{ color: var(--err);  border-color: rgba(201,124,93,0.3); }
+  #status .pill.error   { color: var(--err);  border-color: rgba(201,124,93,0.4); }
+
+  #messages {
+    flex: 1;
+    overflow-y: auto;
+    padding: 18px 0 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+  }
+  .empty {
+    color: var(--fg-dim);
+    text-align: center;
+    padding: 80px 20px;
+    font-size: 14px;
+  }
+  .msg { max-width: 100%; }
+  .msg .role {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--fg-dim);
+    margin-bottom: 4px;
+  }
+  .msg.user .role { color: var(--fg-dim); }
+  .msg.assistant {
+    border-left: 2px solid var(--accent);
+    padding-left: 14px;
+  }
+  .msg.assistant .role { color: var(--accent); }
+  .msg .body { white-space: pre-wrap; word-wrap: break-word; }
+  .msg .body code {
+    font-family: ui-monospace, "JetBrains Mono", "Fira Code", monospace;
+    font-size: 13px;
+    background: var(--bg-elev);
+    padding: 1px 5px;
+    border-radius: 3px;
+  }
+  .msg .body pre {
+    background: #100e0b;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 10px 12px;
+    overflow-x: auto;
+    font-family: ui-monospace, "JetBrains Mono", "Fira Code", monospace;
+    font-size: 13px;
+    margin: 8px 0;
+  }
+  .msg .body pre code { background: transparent; padding: 0; }
+  .cursor {
+    display: inline-block;
+    width: 7px; height: 14px;
+    background: var(--accent);
+    margin-left: 2px;
+    vertical-align: text-bottom;
+    animation: blink 0.9s steps(1) infinite;
+  }
+  @keyframes blink { 50% { opacity: 0; } }
+
+  form {
+    display: flex;
+    gap: 8px;
+    padding: 14px 0 22px;
+    border-top: 1px solid var(--border);
+  }
+  textarea {
+    flex: 1;
+    background: var(--bg-input);
+    color: var(--fg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 12px 14px;
+    font-family: inherit;
+    font-size: 14px;
+    line-height: 1.5;
+    resize: none;
+    min-height: 46px;
+    max-height: 220px;
+  }
+  textarea:focus { outline: none; border-color: var(--accent); }
+  button.send {
+    background: var(--accent);
+    color: var(--bg);
+    border: none;
+    border-radius: 8px;
+    padding: 0 22px;
+    font-weight: 600;
+    font-size: 14px;
+    cursor: pointer;
+  }
+  button.send:hover:not(:disabled) { background: var(--accent-hi); }
+  button.send:disabled { opacity: 0.4; cursor: not-allowed; }
+  .model-select {
+    background: var(--bg-input);
+    color: var(--fg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 6px 8px;
+    font-size: 12px;
+    font-family: ui-monospace, monospace;
+  }
+  .model-select:focus { outline: none; border-color: var(--accent); }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo">⚡</div>
+  <span class="title">Gateway Chat</span>
+  <select class="model-select" id="model" title="Model">
+    <option value="llama-3.3-70b-versatile">llama-3.3-70b-versatile</option>
+    <option value="llama-3.1-8b-instant">llama-3.1-8b-instant</option>
+    <option value="mixtral-8x7b-32768">mixtral-8x7b-32768</option>
+    <option value="gemma2-9b-it">gemma2-9b-it</option>
+  </select>
+  <input class="key-input" id="key" type="password" placeholder="GATEWAY_API_KEY" autocomplete="off">
+  <button class="clear" id="clear" title="Clear chat">Clear</button>
+</header>
+
+<div id="status"></div>
+<div id="messages">
+  <div class="empty">Send a message to start.</div>
+</div>
+
+<form id="form" autocomplete="off">
+  <textarea id="input" placeholder="Ask anything…  (Enter to send, Shift+Enter for newline)" rows="1" autofocus></textarea>
+  <button class="send" type="submit" id="send">Send</button>
+</form>
+
+<script>
+const $messages = document.getElementById("messages");
+const $form     = document.getElementById("form");
+const $input    = document.getElementById("input");
+const $send     = document.getElementById("send");
+const $key      = document.getElementById("key");
+const $model    = document.getElementById("model");
+const $clear    = document.getElementById("clear");
+const $status   = document.getElementById("status");
+
+$key.value = localStorage.getItem("gw_key") || "";
+$model.value = localStorage.getItem("gw_model") || $model.value;
+$model.addEventListener("change", () => localStorage.setItem("gw_model", $model.value));
+$key.addEventListener("change",   () => localStorage.setItem("gw_key", $key.value));
+
+function escapeHTML(s) {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+function renderMarkdown(text) {
+  const parts = text.split(/(\`\`\`[\s\S]*?\`\`\`|\`[^\`\n]+\`)/g);
+  return parts.map(p => {
+    if (p.startsWith("```")) {
+      const code = p.replace(/^\`\`\`\w*\n?|\`\`\`$/g, "");
+      return `<pre><code>${escapeHTML(code)}</code></pre>`;
+    }
+    if (p.startsWith("`")) {
+      return `<code>${escapeHTML(p.slice(1, -1))}</code>`;
+    }
+    return escapeHTML(p);
+  }).join("");
+}
+
+function scrollDown() { $messages.scrollTop = $messages.scrollHeight; }
+
+function addMessage(role, html) {
+  const empty = $messages.querySelector(".empty");
+  if (empty) empty.remove();
+  const div = document.createElement("div");
+  div.className = `msg ${role}`;
+  div.innerHTML = `<div class="role">${role}</div><div class="body"></div>`;
+  const body = div.querySelector(".body");
+  body.innerHTML = html;
+  $messages.appendChild(div);
+  scrollDown();
+  return body;
+}
+
+function setStatus(label, cls) {
+  if (!label) { $status.innerHTML = ""; return; }
+  $status.innerHTML = `<span class="pill ${cls || ""}">${escapeHTML(label)}</span>`;
+}
+
+let activeBody = null;
+let activeRaw  = "";
+
+$input.addEventListener("input", () => {
+  $input.style.height = "auto";
+  $input.style.height = Math.min($input.scrollHeight, 220) + "px";
+});
+
+$input.addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !e.shiftKey) {
+    e.preventDefault();
+    $form.requestSubmit();
+  }
+});
+
+$clear.addEventListener("click", () => {
+  $messages.innerHTML = '<div class="empty">Send a message to start.</div>';
+  setStatus("");
+});
+
+$form.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const prompt = $input.value.trim();
+  const token  = $key.value.trim();
+  if (!prompt) return;
+  if (!token)  { setStatus("missing API key", "error"); return; }
+  localStorage.setItem("gw_key", token);
+  $input.value = ""; $input.style.height = "auto";
+  $send.disabled = true;
+  addMessage("user", renderMarkdown(prompt));
+  activeBody = addMessage("assistant", '<span class="cursor"></span>');
+  activeRaw  = "";
+  setStatus("thinking…", "miss");
+
+  try {
+    const resp = await fetch("/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Authorization": "Bearer " + token,
+        "Content-Type":  "application/json",
+      },
+      body: JSON.stringify({
+        model:    $model.value,
+        stream:   true,
+        messages: [{ role: "user", content: prompt }],
+      }),
+    });
+    if (!resp.ok) {
+      const errBody = await resp.text();
+      activeBody.innerHTML = `<em>HTTP ${resp.status}</em>\n\n${escapeHTML(errBody)}`;
+      setStatus(`error ${resp.status}`, "error");
+      return;
+    }
+    setStatus("streaming…", "miss");
+    const reader  = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let cacheStatus = "";
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop();
+      for (const line of lines) {
+        if (!line.startsWith("data: ")) continue;
+        const data = line.slice(6).trim();
+        if (data === "[DONE]") continue;
+        let obj;
+        try { obj = JSON.parse(data); } catch { continue; }
+        const delta = obj.choices?.[0]?.delta?.content
+                   || obj.choices?.[0]?.message?.content
+                   || "";
+        if (delta) {
+          activeRaw += delta;
+          activeBody.innerHTML = renderMarkdown(activeRaw) + '<span class="cursor"></span>';
+          scrollDown();
+        }
+        if (!cacheStatus) {
+          cacheStatus = obj._cache_status || "";
+        }
+      }
+    }
+    activeBody.innerHTML = renderMarkdown(activeRaw);
+    setStatus(cacheStatus || "done", cacheStatus === "HIT" ? "hit" : "miss");
+  } catch (err) {
+    if (activeBody) activeBody.innerHTML = `<em>Network error: ${escapeHTML(String(err))}</em>`;
+    setStatus("network error", "error");
+  } finally {
+    $send.disabled = false;
+    $input.focus();
+  }
+});
+
+fetch("/health").then(r => r.json()).then(d => {
+  setStatus(`breaker: ${d.breaker_state || "?"}  ·  uptime: ${d.uptime_seconds || 0}s`, "");
+}).catch(() => setStatus("gateway offline", "error"));
+</script>
+</body>
+</html>

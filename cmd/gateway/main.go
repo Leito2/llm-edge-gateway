@@ -114,6 +114,7 @@ func main() {
 		TimeFormat: "15:04:05",
 	}))
 
+	app.Get("/", p.HandleUI)
 	app.Get("/health", p.HandleHealth)
 	app.Get("/stats", p.HandleStats)
 
