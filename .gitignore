@@ -38,3 +38,4 @@ docker-compose.override.yml
 
 # Test outputs
 /tmp/
+AGENTS.md
