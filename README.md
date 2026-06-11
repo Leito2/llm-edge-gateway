@@ -133,6 +133,24 @@ cp .env.example .env
 #
 # Get a free Groq key at https://console.groq.com/keys
 # Leave the rest of the .env file as-is (the defaults are sensible).
+#
+# The gateway auto-loads .env on startup, but YOUR SHELL does not.
+# When you open a second terminal to test with curl (Step 6), you need
+# to export the values yourself. The two easiest ways:
+#
+#   # A) Quick: export each var in the current terminal session:
+#   export GATEWAY_API_KEY=demo-key-1234567890
+#   export GROQ_API_KEY=gsk_your_real_groq_key_here
+#   echo "valor: [$GATEWAY_API_KEY]"   # sanity check: must print [demo-key-1234567890]
+#
+#   # B) One-liner: load every var from .env into the current shell:
+#   set -a && source .env && set +a
+#
+# To avoid typing this every time you open a new terminal, append the
+# export to your shell rc file and reload it:
+#   echo 'export GATEWAY_API_KEY=demo-key-1234567890' >> ~/.bashrc
+#   source ~/.bashrc
+# (use ~/.zshrc if you use zsh)
 ```
 
 **Critical**: `GROQ_API_KEY` must be a real Groq key. A fake value like `gsk_xxx` will make the gateway fail every request to the upstream (and only work via the local fallback). See "Troubleshooting" below for the symptoms.
