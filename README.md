@@ -305,6 +305,80 @@ The circuit breaker (`BREAKER_FAILURE_THRESHOLD`, `BREAKER_OPEN_TIMEOUT`) and th
 
 ---
 
+## 🔄 Restarting the Gateway
+
+The gateway reads `.env` **once at startup**. Any change to the configuration (API keys, ports, thresholds, models, timeouts) requires a full restart to take effect.
+
+### Quick restart (foreground binary)
+
+If you started the gateway with `./gateway` in another terminal:
+
+```bash
+# In the terminal where ./gateway is running: press Ctrl+C
+# Then in any terminal:
+cd /home/white/Projects/Go-LLM-Gateway
+./gateway
+```
+
+If you started it in the background or in another shell you can't see:
+
+```bash
+pkill -f "./gateway"      # stop the running instance
+cd /home/white/Projects/Go-LLM-Gateway
+./gateway                  # start it again
+```
+
+`pkill` matches against the full command line, so it only kills *our* binary and never touches unrelated processes.
+
+### Restart after rebuilding (you pulled new code)
+
+```bash
+cd /home/white/Projects/Go-LLM-Gateway
+git pull
+go build -o gateway ./cmd/gateway/
+pkill -f "./gateway"
+./gateway
+```
+
+### What a healthy startup looks like
+
+The gateway is ready to accept requests as soon as you see the last line of this block:
+
+```
+[main] loaded config from .env             (or: no .env found, using real env)
+[main] redis OK at localhost:6379
+[main] embedder OK (nomic-embed-text, 768 dims)
+[main] cache OK (threshold=0.85, ttl=168h0m0s)
+[main] circuit breaker OK (threshold=3, timeout=30s)
+[main] starting gateway on :8080
+```
+
+If you see a `log.Fatalf` line (`config load failed: ...`, `redis ping failed`, `embedder warmup failed`, `listen failed: ...`), the gateway has **refused to start**. Fix the issue and run `./gateway` again. The [🆘 Troubleshooting](#-troubleshooting) section covers the common cases.
+
+### When a restart IS required
+
+- You changed any value in `.env` (`GROQ_API_KEY`, `GROQ_BASE_URL`, `GROQ_MODEL`, cache threshold, breaker settings, server port, etc.)
+- You updated code with `git pull` (rebuild first, then restart)
+- You switched the embedding model (`EMBEDDING_MODEL` in `.env`) — even after a `ollama pull`
+- You see stale or inconsistent behavior that wasn't there before — a fresh process is often the fastest fix
+
+### When a restart is NOT required
+
+- **Redis was restarted** — the gateway talks to it on every request, no restart needed
+- **You pulled a new Ollama model** for the **fallback** (`OLLAMA_MODEL`) — the model is loaded on demand per request
+- **A request to Groq failed** — the circuit breaker handles this automatically, no manual intervention
+- **You flushed the cache** — same as the Redis case; the gateway reads fresh state on every request
+
+### Stopping the gateway permanently
+
+```bash
+pkill -f "./gateway"
+```
+
+That is the only way to stop it cleanly. The gateway traps `SIGINT` (Ctrl+C) and `SIGTERM`, runs a 5-second graceful shutdown, and closes the Redis connection.
+
+---
+
 ## 🔑 Key Concepts
 
 ### Non-streaming mode (default)
