@@ -30,6 +30,7 @@ Built entirely in Go using the **Fiber framework** (wrapping `fasthttp`), the sy
 | **Streaming SSE** | OpenAI-compatible Server-Sent Events | TTFT < 50 ms on cache hit |
 | **Bearer Auth** | Constant-time comparison, fail-closed | Safe for public networks |
 | **Pluggable Providers** | `Provider` interface, Groq default | Zero vendor lock-in |
+| **Web Chat UI** | Built-in Claude Code–themed page at `GET /` | Zero extra server, no CORS |
 
 ### Tech Stack
 
@@ -231,6 +232,37 @@ curl http://localhost:8080/stats
 
 **For 5 ready-to-use client examples in curl, Python, Node.js, and Go, see [`examples/`](./examples/).**
 
+### Step 7 — Or just open the web UI
+
+If you would rather not touch curl, the gateway itself serves a minimal chat page at `GET /` — same binary, no extra server, no CORS, no build step.
+
+Open the browser at:
+
+```
+http://localhost:8080/
+```
+
+![Web Chat UI](docs/images/chat-ui.png)
+
+The page is a single self-contained HTML file embedded into the binary with `//go:embed` (zero runtime dependencies, ~14 KB). Behind the scenes it speaks the exact same `/v1/chat/completions` endpoint you just used with curl, so every feature of the gateway applies — semantic cache, circuit breaker, streaming, fallback — and is visible in the response headers shown above each assistant turn.
+
+**Features:**
+
+- **Claude Code–themed UI** — dark warm-amber palette (`#1a1814` background, `#d4a373` accent), no framework, no fonts to load
+- **API key field** at the top right; persisted in `localStorage`, masked like a password
+- **Model selector** — switch between `llama-3.3-70b-versatile`, `llama-3.1-8b-instant`, `mixtral-8x7b-32768`, `gemma2-9b-it` without restarting
+- **Streaming responses** with a blinking caret while tokens arrive (sub-50 ms TTFT on cache hits)
+- **Status pill** under the header shows the live `X-Cache-Status` (`HIT` / `MISS` / `MISS-FALLBACK` / `error`) from the gateway's actual response headers
+- **Centered input** when the chat is empty — no need to drag the cursor to the bottom to start typing
+- **Sticky form with backdrop blur** — messages appear to scroll behind a frosted-glass input, the way Claude Code itself does it
+- **Invisible scrollbar** — the chat still scrolls with the wheel/touch, but the heavy default bar is hidden across all engines (Firefox, Chrome, Safari, Edge)
+- **Inline error display** — if the upstream sends a `data: {"error":...}` chunk, the message body shows it in red instead of going silently blank
+- **`Clear` button** wipes the chat for a fresh session
+
+Keyboard shortcuts: `Enter` to send, `Shift+Enter` for a newline.
+
+> The web UI is the recommended way to demo the gateway — you get instant visual feedback on cache hits, fallback, and streaming without writing a single line of code.
+
 ---
 
 ## ➕ Bonus — Pointing the Gateway at a Different Upstream
@@ -401,6 +433,9 @@ Every query is converted to a 768-dim vector via `nomic-embed-text`. We look it 
 - `X-Cache-Similarity`: cosine similarity (only on HIT, e.g. `0.8929`)
 - `X-Latency-Ms`: time to first byte (only on streams)
 
+### The built-in web UI
+The gateway serves a chat page at `GET /` so you can demo the full pipeline from a browser without writing any client code. It is the same binary — no separate frontend, no Node, no build step. See [Step 7](#step-7--or-just-open-the-web-ui) of the Quick Start for the screenshot and the full feature list.
+
 ---
 
 ## 📚 Project Structure
@@ -420,10 +455,17 @@ llm-edge-gateway/
 │   ├── metrics/                  # Atomic counters
 │   ├── providers/                # Upstream providers (Groq, etc.)
 │   └── proxy/                    # Request orchestration + streaming
+│       ├── proxy.go              #   - pipeline, non-stream + stream
+│       ├── ui.go                 #   - //go:embed of ui.html
+│       └── ui.html               #   - Claude Code–themed chat page
 ├── pkg/types/                    # Shared structs
 ├── examples/                     # 5 ready-to-use client examples
 ├── scripts/                      # init-redis.sh, pull-models.sh
-├── docs/                         # Architecture diagrams
+├── docs/
+│   ├── images/
+│   │   ├── architecture.png      # Request-flow diagram
+│   │   └── chat-ui.png           # Screenshot of the web UI
+│   └── *.md                      # Design notes
 ├── docker-compose.yml            # Redis Stack
 ├── .env.example                  # Config template
 ├── AGENTS.md                     # Full build plan
@@ -493,6 +535,21 @@ The cache might have a stale entry. Lower the threshold in `.env` (`CACHE_SIMILA
 ### Streaming chunks are tiny or missing
 Some HTTP intermediaries (nginx, cloudflare) buffer SSE by default. Add `X-Accel-Buffering: no` to your response headers (already done by the gateway) and configure your proxy to not buffer.
 
+### Web UI shows "Upstream error: ... context canceled" on every request
+Your binary is older than the streaming-context fix. The streaming path used to cancel its upstream context the moment the HTTP handler returned, which aborted every call to Groq in ~30 ms. Pull the latest, rebuild, and restart:
+```bash
+git pull
+go build -o gateway ./cmd/gateway/
+pkill -f "./gateway"
+./gateway
+```
+
+### Web UI shows "No chunks received from the gateway"
+The streaming response ended with zero data chunks. Open `F12` → **Console** in the browser — every parsed chunk is logged with the prefix `[gw] chunk:`. If the log is empty, the request never reached the streaming code path; check the gateway terminal for the last 5–10 log lines. If chunks ARE logged but the body stays empty, you have hit a real bug — please open an issue with the log.
+
+### Web UI looks unstyled / no amber colors
+You are probably viewing a cached version of the page. Hard-reload with `Ctrl+Shift+R` (or `Cmd+Shift+R` on macOS) so the browser re-downloads `ui.html` from the embedded copy in the binary.
+
 ---
 
 ## 🛠️ Development Phases
@@ -511,6 +568,7 @@ Some HTTP intermediaries (nginx, cloudflare) buffer SSE by default. Add `X-Accel
 | 9 | Tests + benchmark + docs | ✅ | 66/66 tests pass |
 | 10 | Demo circuit breaker | ✅ | Validated end-to-end |
 | 11 | Streaming SSE | ✅ | OpenAI-compatible SSE with cache writeback |
+| 12 | Built-in Web UI | ✅ | `internal/proxy/ui.{go,html}` + streaming context fix |
 
 **Test coverage**: 66/66 tests passing across 8 packages
 (`auth`, `breaker`, `cache`, `config`, `embedder`, `fallback`, `providers`, `proxy`).
