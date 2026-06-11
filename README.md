@@ -276,6 +276,33 @@ The gateway isn't running. In the first terminal, run `./gateway` and watch the 
 ### Gateway crashes immediately with "config load failed: required key GATEWAY_API_KEY missing value"
 You didn't create `.env`, or the `GATEWAY_API_KEY` line is missing/commented. Run `cp .env.example .env` and edit it.
 
+### curl returns `{"error":"missing or malformed Authorization header (expected: Bearer <key>)"}`
+The gateway reads `.env` **once at startup**, and your shell variables do **not** persist between terminals. If you ran `export GATEWAY_API_KEY=...` in one terminal and then opened a new one to run curl, the new terminal has no `GATEWAY_API_KEY`, so curl sends `Authorization: Bearer ` (empty) and the middleware rejects it.
+
+Fix in the terminal where you run curl:
+```bash
+cd /home/white/Projects/Go-LLM-Gateway
+export GATEWAY_API_KEY=demo-key-1234567890
+echo "[$GATEWAY_API_KEY]"   # sanity check: must print [demo-key-1234567890]
+```
+Or load the whole `.env` at once:
+```bash
+set -a && source .env && set +a
+```
+To make it permanent across terminals, append the export to your shell rc file:
+```bash
+echo 'export GATEWAY_API_KEY=demo-key-1234567890' >> ~/.bashrc
+source ~/.bashrc
+```
+
+### curl returns `{"error":"invalid api key"}`
+The bearer format is correct but the key doesn't match what the gateway has loaded. This usually means the gateway was started **before** you edited `.env`, or it was started from a different directory. Kill it (`pkill -f "./gateway"` or `Ctrl+C`) and restart it from the project root so it re-reads `.env`:
+```bash
+cd /home/white/Projects/Go-LLM-Gateway
+./gateway
+```
+Look for `[main] loaded config from .env` in the log to confirm.
+
 ### Gateway says "redis ping failed"
 Redis Stack is not running. Run `docker compose up -d` and verify with `docker ps | grep gateway-redis` (should say "healthy").
 
