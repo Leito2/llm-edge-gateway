@@ -389,7 +389,6 @@ func (p *Proxy) streamFromProvider(c *fiber.Ctx, req types.ChatRequest, query st
 		streamTimeout = 30 * time.Second
 	}
 	streamCtx, cancel := context.WithTimeout(context.Background(), streamTimeout)
-	defer cancel()
 
 	chunks, errs := provider.StreamChat(streamCtx, req)
 
@@ -406,6 +405,7 @@ func (p *Proxy) streamFromProvider(c *fiber.Ctx, req types.ChatRequest, query st
 	)
 
 	c.Context().SetBodyStreamWriter(fasthttp.StreamWriter(func(w *bufio.Writer) {
+		defer cancel()
 		for c := range chunks {
 			if c.Done {
 				finish := map[string]any{
