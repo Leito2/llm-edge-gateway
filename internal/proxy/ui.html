@@ -19,7 +19,7 @@
     --err:       #c97c5d;
   }
   * { box-sizing: border-box; }
-  html, body { margin: 0; padding: 0; height: 100%; }
+  html, body { margin: 0; padding: 0; min-height: 100vh; }
   body {
     background: var(--bg);
     color: var(--fg);
@@ -98,7 +98,21 @@
     display: flex;
     flex-direction: column;
     gap: 14px;
+    scrollbar-width: none;
+    -ms-overflow-style: none;
   }
+  #messages::-webkit-scrollbar { display: none; }
+  #messages::-webkit-scrollbar-track { background: transparent; }
+  #messages::-webkit-scrollbar-thumb { background: transparent; }
+
+  .chat {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+  }
+  body:has(#messages .empty) .chat { justify-content: center; }
+  body:has(#messages .empty) #messages { padding: 0; }
   .empty {
     color: var(--fg-dim);
     text-align: center;
@@ -153,6 +167,12 @@
     gap: 8px;
     padding: 14px 0 22px;
     border-top: 1px solid var(--border);
+    position: sticky;
+    bottom: 0;
+    background: var(--bg);
+    background: linear-gradient(to bottom, rgba(26,24,20,0.6), var(--bg) 30%);
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
   }
   textarea {
     flex: 1;
@@ -209,6 +229,7 @@
 </header>
 
 <div id="status"></div>
+<div class="chat">
 <div id="messages">
   <div class="empty">Send a message to start.</div>
 </div>
@@ -217,6 +238,7 @@
   <textarea id="input" placeholder="Ask anything…  (Enter to send, Shift+Enter for newline)" rows="1" autofocus></textarea>
   <button class="send" type="submit" id="send">Send</button>
 </form>
+</div>
 
 <script>
 const $messages = document.getElementById("messages");
